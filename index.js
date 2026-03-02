@@ -59,6 +59,7 @@ app.use(
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
+<<<<<<< HEAD
 );
 // // IMPORTANT: preflight handle
 // app.options("*", cors());
@@ -124,3 +125,6 @@ const verifyJWT = (req, res, next) => {
     next();
   });
 };
+=======
+);
+>>>>>>> development
