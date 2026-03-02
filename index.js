@@ -128,3 +128,90 @@ const verifyJWT = (req, res, next) => {
 =======
 );
 >>>>>>> development
+
+async function run() {
+  try {
+    const db = client.db("smartCse");
+    const usersCollection = db.collection("users");
+    const coursesCollection = db.collection("courses");
+    const routinesCollection = db.collection("routines");
+    const attendanceCollection = db.collection("attendance");
+    const settingsCollection = db.collection("settings");
+    const feedbackCollection = db.collection("feedback");
+    const facultiesCollection = db.collection("faculties");
+    const resultsCollection = db.collection("results");
+    const noticesCollection = db.collection("notices");
+    const classroomsCollection = db.collection("classrooms");
+    const classSchedulesCollection = db.collection("classSchedules");
+
+    // Admin verification middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+
+      const user = await usersCollection.findOne({ email });
+
+      if (!user || user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access (admin only)" });
+      }
+
+      next();
+    };
+
+    // Teacher or Admin verification middleware
+    const verifyTeacherOrAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+
+      const user = await usersCollection.findOne({ email });
+      if (!user || (user.role !== "admin" && user.role !== "teacher")) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access (Teacher or Admin only)" });
+      }
+      next();
+    };
+
+    // clodinary upload route
+    app.post(
+      "/upload-image",
+      // verifyJWT,
+      upload.single("image"),
+      async (req, res) => {
+        try {
+          if (!req.file) {
+            return res.status(400).send({ message: "No file uploaded" });
+          }
+
+          const fileBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+          const uploadResponse = await cloudinary.uploader.upload(fileBase64, {
+            upload_preset: "smartcseimage",
+          });
+
+          res.json({
+            url: uploadResponse.secure_url,
+            public_id: uploadResponse.public_id,
+          });
+        } catch (err) {
+          console.error("Cloudinary Error:", err);
+          res.status(500).send({
+            message: "Cloudinary upload failed. Check API keys/Presets.",
+          });
+        }
+      },
+    );
+
+    app.delete(
+      "/delete-image/:publicId",
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        const publicId = req.params.publicId;
+        try {
+          await cloudinary.uploader.destroy(publicId);
+          res.send({ message: "Image deleted from Cloudinary" });
+        } catch (err) {
+          res.status(500).send({ message: "Delete failed" });
+        }
+      },
+    );
