@@ -1545,3 +1545,250 @@ app.post("/attendance/upsert", async (req, res) => {
       },
     );
 
+  
+    
+     // classrooms routes
+    app.get("/classrooms", verifyJWT, async (req, res) => {
+      const result = await classroomsCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.post("/classrooms", verifyJWT, verifyAdmin, async (req, res) => {
+      const room = req.body;
+      const existing = await classroomsCollection.findOne({
+        roomNo: room.roomNo,
+      });
+      if (existing) {
+        return res.status(409).send({ message: "Room already exists" });
+      }
+      const result = await classroomsCollection.insertOne(room);
+      res.send(result);
+    });
+
+    app.patch("/classrooms/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const updatedData = req.body;
+      delete updatedData._id;
+      const result = await classroomsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData },
+      );
+      res.send(result);
+    });
+
+    app.delete("/classrooms/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const result = await classroomsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    // class assignment route with conflict check
+    app.post("/class-assign", verifyJWT, async (req, res) => {
+      const newClass = req.body;
+
+      // new class er time calcualte kora hocche
+      const newStart = new Date(`${newClass.day}T${newClass.startTime}`);
+      const newEnd = new Date(
+        newStart.getTime() + parseFloat(newClass.duration) * 60 * 60 * 1000,
+      );
+
+      // ২. same date a ki ki class ache seta check kora
+      const existingClasses = await classSchedulesCollection
+        .find({
+          roomNumber: newClass.roomNumber,
+          day: newClass.day,
+        })
+        .toArray();
+
+      // ৩. ওভারল্যাপ চেক করা
+      const isOverlapping = existingClasses.some((cls) => {
+        const existingStart = new Date(`${cls.day}T${cls.startTime}`);
+        const existingEnd = new Date(
+          existingStart.getTime() + parseFloat(cls.duration) * 60 * 60 * 1000,
+        );
+
+        // ওভারল্যাপের গাণিতিক শর্ত: (NewStart < ExistingEnd) AND (NewEnd > ExistingStart)
+        return newStart < existingEnd && newEnd > existingStart;
+      });
+
+      if (isOverlapping) {
+        return res.status(400).send({
+          message:
+            "This room is already booked for another class during this time!",
+        });
+      }
+
+      // jodi room avl tahek tobe data add hobe
+      const result = await classSchedulesCollection.insertOne(newClass);
+      res.send(result);
+    });
+
+    app.get("/class-assign", verifyJWT, async (req, res) => {
+      try {
+        const email = req.decoded?.email;
+
+        const user = await usersCollection.findOne({ email: email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        let query = {};
+
+        if (user.role === "teacher") {
+          query.teacherId = user.teacherId;
+        }
+
+        const result = await classSchedulesCollection
+          .find(query)
+          .sort({ startTime: 1 })
+          .toArray();
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+   
+    // update class assignment (admin or teacher, with conflict check)
+    app.patch(
+      "/class-assign/:id",
+      verifyJWT,
+      verifyTeacherOrAdmin, // verifyJWT আগে থাকা ভালো সিকিউরিটির জন্য
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const updateData = req.body;
+          const query = { _id: new ObjectId(id) };
+
+          // ১. বর্তমান ক্লাসের তথ্য এবং আপডেটেড তথ্যের সমন্বয় করা
+          const currentClass = await classSchedulesCollection.findOne(query);
+          if (!currentClass) {
+            return res.status(404).send({ message: "Class not found" });
+          }
+
+          // যদি ইউজারের পাঠানো ডাটাতে নির্দিষ্ট ফিল্ড না থাকে, তবে আগের ডাটা ব্যবহার করবে
+          const updatedDay = updateData.day || currentClass.day;
+          const updatedStartTime =
+            updateData.startTime || currentClass.startTime;
+          const updatedDuration = updateData.duration || currentClass.duration;
+          const updatedRoom = updateData.roomNumber || currentClass.roomNumber;
+
+          // ২. নতুন সময় ক্যালকুলেট করা
+          const newStart = new Date(`${updatedDay}T${updatedStartTime}`);
+          const newEnd = new Date(
+            newStart.getTime() + parseFloat(updatedDuration) * 60 * 60 * 1000,
+          );
+
+          // ৩. ওভারল্যাপ চেক করা (বর্তমান ক্লাসটি বাদ দিয়ে বাকিগুলোর সাথে)
+          const existingClasses = await classSchedulesCollection
+            .find({
+              _id: { $ne: new ObjectId(id) }, // এই লাইনটি সবচেয়ে গুরুত্বপূর্ণ: নিজের ID বাদ দেওয়া
+              roomNumber: updatedRoom,
+              day: updatedDay,
+            })
+            .toArray();
+
+          const isOverlapping = existingClasses.some((cls) => {
+            const existingStart = new Date(`${cls.day}T${cls.startTime}`);
+            const existingEnd = new Date(
+              existingStart.getTime() +
+                parseFloat(cls.duration) * 60 * 60 * 1000,
+            );
+
+            return newStart < existingEnd && newEnd > existingStart;
+          });
+
+          if (isOverlapping) {
+            return res.status(400).send({
+              message:
+                "Conflict detected! The room is already booked for another class at this updated time.",
+            });
+          }
+
+          // ৪. কোনো কনফ্লিক্ট না থাকলে ডাটা আপডেট করা
+          const result = await classSchedulesCollection.updateOne(query, {
+            $set: updateData,
+          });
+
+          res.send(result);
+        } catch (err) {
+          console.error(err);
+          res
+            .status(500)
+            .send({ message: "Internal server error during update" });
+        }
+      },
+    );
+
+app.get("/my-assigned-classes", verifyJWT, async (req, res) => {
+  try {
+    const email = req.decoded.email;
+
+    const user = await usersCollection.findOne({ email });
+
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    // ✅ Today date in YYYY-MM-DD format
+    const today = new Date().toISOString().split("T")[0];
+
+    const result = await classSchedulesCollection
+      .find({
+        teacherId: user.teacherId,
+        day: today,   // 🔥 FILTER BY TODAY DATE
+      })
+      .sort({ startTime: 1 })
+      .toArray();
+
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({
+      message: "Failed to load assigned classes",
+      error: err.message,
+    });
+  }
+});
+
+    // delete class assignment (admin or teacher)
+    app.delete(
+      "/class-assign/:id",
+      verifyJWT,
+      verifyTeacherOrAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const result = await classSchedulesCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
+          res.send(result);
+        } catch (err) {
+          res.status(500).send({ message: "Delete failed" });
+        }
+      },
+    );
+
+    await client.connect();
+    console.log("Connected to MongoDB");
+
+    await client.db("admin").command({ ping: 1 });
+    console.log("Ping successful");
+
+    app.get("/", (req, res) => {
+      res.send("Hello World!");
+    });
+
+    app.listen(port, () => {
+      console.log(`Server running on port ${port}`);
+    });
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+run();
+
